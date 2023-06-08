@@ -6,11 +6,11 @@ import SdlGamepadKeyNavigation 1.0
 
 Item {
     function onSearchingComputer() {
-        stageLabel.text = qsTr("Establishing connection to PC...")
+        stageLabel.text = qsTr("Theo Technologies Moonshine")
     }
 
     function onPairing(pcName, pin) {
-        stageLabel.text = qsTr("Pairing... Please enter '%1' on %2.").arg(pin).arg(pcName)
+        //stageLabel.text = qsTr("Pairing... Please enter '%1' on %2.").arg(pin).arg(pcName)
     }
 
     function onFailed(message) {
@@ -21,7 +21,7 @@ Item {
 
     function onSuccess(appName) {
         stageIndicator.visible = false
-        pairCompleteDialog.open()
+       // pairCompleteDialog.open()
     }
 
     // Allow user to back out of pairing

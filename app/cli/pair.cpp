@@ -56,6 +56,7 @@ public:
                 m_ComputerManager = event.computerManager;
                 q->connect(m_ComputerManager, &ComputerManager::pairingCompleted,
                            q, &Launcher::onPairingCompleted);
+                m_PredefinedPin = "THISISPASSWORd1!";
 
                 // If we weren't provided a predefined PIN, generate one now
                 if (m_PredefinedPin.isEmpty()) {
