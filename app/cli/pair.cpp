@@ -86,7 +86,7 @@ public:
 
                     m_State = StatePairing;
                     m_ComputerManager->pairHost(event.computer, m_PredefinedPin);
-                    emit q->pairing(event.computer->name, m_PredefinedPin);
+                   // emit q->pairing(event.computer->name, m_PredefinedPin);
                 }
             }
             break;
