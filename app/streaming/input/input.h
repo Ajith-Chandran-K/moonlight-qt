@@ -19,13 +19,21 @@ struct GamepadState {
     SDL_TimerID mouseEmulationTimer;
     uint32_t lastStartDownTime;
 
-    short buttons;
+    uint8_t gyroReportPeriodMs;
+    uint32_t lastGyroEventTime;
+
+    uint8_t accelReportPeriodMs;
+    uint32_t lastAccelEventTime;
+
+    int buttons;
     short lsX, lsY;
     short rsX, rsY;
     unsigned char lt, rt;
 };
 
-#define MAX_GAMEPADS 4
+// activeGamepadMask is a short, so we're bounded by the number of mask bits
+#define MAX_GAMEPADS 16
+
 #define MAX_FINGERS 2
 
 #define GAMEPAD_HAPTIC_METHOD_NONE 0
@@ -58,11 +66,21 @@ public:
 
     void handleControllerDeviceEvent(SDL_ControllerDeviceEvent* event);
 
+#if SDL_VERSION_ATLEAST(2, 0, 14)
+    void handleControllerSensorEvent(SDL_ControllerSensorEvent* event);
+
+    void handleControllerTouchpadEvent(SDL_ControllerTouchpadEvent* event);
+#endif
+
     void handleJoystickArrivalEvent(SDL_JoyDeviceEvent* event);
 
     void sendText(QString& string);
 
-    void rumble(unsigned short controllerNumber, unsigned short lowFreqMotor, unsigned short highFreqMotor);
+    void rumble(uint16_t controllerNumber, uint16_t lowFreqMotor, uint16_t highFreqMotor);
+
+    void rumbleTriggers(uint16_t controllerNumber, uint16_t leftTrigger, uint16_t rightTrigger);
+
+    void setMotionEventState(uint16_t controllerNumber, uint8_t motionType, uint16_t reportRateHz);
 
     void handleTouchFingerEvent(SDL_TouchFingerEvent* event);
 
@@ -109,6 +127,8 @@ private:
     void sendGamepadState(GamepadState* state);
 
     void handleAbsoluteFingerEvent(SDL_TouchFingerEvent* event);
+
+    void emulateAbsoluteFingerEvent(SDL_TouchFingerEvent* event);
 
     void handleRelativeFingerEvent(SDL_TouchFingerEvent* event);
 

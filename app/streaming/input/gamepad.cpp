@@ -27,7 +27,10 @@ const int SdlInputHandler::k_ButtonMap[] = {
     BACK_FLAG, SPECIAL_FLAG, PLAY_FLAG,
     LS_CLK_FLAG, RS_CLK_FLAG,
     LB_FLAG, RB_FLAG,
-    UP_FLAG, DOWN_FLAG, LEFT_FLAG, RIGHT_FLAG
+    UP_FLAG, DOWN_FLAG, LEFT_FLAG, RIGHT_FLAG,
+    MISC_FLAG,
+    PADDLE1_FLAG, PADDLE2_FLAG, PADDLE3_FLAG, PADDLE4_FLAG,
+    TOUCHPAD_FLAG,
 };
 
 GamepadState*
@@ -42,8 +45,8 @@ SdlInputHandler::findStateForGamepad(SDL_JoystickID id)
         }
     }
 
-    // This should only happen with > 4 gamepads
-    SDL_assert(SDL_NumJoysticks() > 4);
+    // This should only happen with too many gamepads
+    SDL_assert(SDL_NumJoysticks() > MAX_GAMEPADS);
     return nullptr;
 }
 
@@ -162,6 +165,13 @@ void SdlInputHandler::handleControllerAxisEvent(SDL_ControllerAxisEvent* event)
 
 void SdlInputHandler::handleControllerButtonEvent(SDL_ControllerButtonEvent* event)
 {
+    if (event->button >= SDL_arraysize(k_ButtonMap)) {
+        SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+                    "No mapping for gamepad button: %u",
+                    event->button);
+        return;
+    }
+
     GamepadState* state = findStateForGamepad(event->which);
     if (state == NULL) {
         return;
@@ -302,6 +312,58 @@ void SdlInputHandler::handleControllerButtonEvent(SDL_ControllerButtonEvent* eve
     }
 }
 
+#if SDL_VERSION_ATLEAST(2, 0, 14)
+
+void SdlInputHandler::handleControllerSensorEvent(SDL_ControllerSensorEvent* event)
+{
+    GamepadState* state = findStateForGamepad(event->which);
+    if (state == NULL) {
+        return;
+    }
+
+    switch (event->sensor) {
+    case SDL_SENSOR_ACCEL:
+        if (state->accelReportPeriodMs && SDL_TICKS_PASSED(event->timestamp, state->lastAccelEventTime + state->accelReportPeriodMs)) {
+            LiSendControllerMotionEvent((uint8_t)state->index, LI_MOTION_TYPE_ACCEL, event->data[0], event->data[1], event->data[2]);
+            state->lastAccelEventTime = event->timestamp;
+        }
+        break;
+    case SDL_SENSOR_GYRO:
+        if (state->gyroReportPeriodMs && SDL_TICKS_PASSED(event->timestamp, state->lastGyroEventTime + state->gyroReportPeriodMs)) {
+            LiSendControllerMotionEvent((uint8_t)state->index, LI_MOTION_TYPE_GYRO, event->data[0], event->data[1], event->data[2]);
+            state->lastGyroEventTime = event->timestamp;
+        }
+        break;
+    }
+}
+
+void SdlInputHandler::handleControllerTouchpadEvent(SDL_ControllerTouchpadEvent* event)
+{
+    GamepadState* state = findStateForGamepad(event->which);
+    if (state == NULL) {
+        return;
+    }
+
+    uint8_t eventType;
+    switch (event->type) {
+    case SDL_CONTROLLERTOUCHPADDOWN:
+        eventType = LI_TOUCH_EVENT_DOWN;
+        break;
+    case SDL_CONTROLLERTOUCHPADUP:
+        eventType = LI_TOUCH_EVENT_UP;
+        break;
+    case SDL_CONTROLLERTOUCHPADMOTION:
+        eventType = LI_TOUCH_EVENT_MOVE;
+        break;
+    default:
+        return;
+    }
+
+    LiSendControllerTouchEvent((uint8_t)state->index, eventType, event->finger, event->x, event->y, event->pressure);
+}
+
+#endif
+
 void SdlInputHandler::handleControllerDeviceEvent(SDL_ControllerDeviceEvent* event)
 {
     GamepadState* state;
@@ -427,8 +489,66 @@ void SdlInputHandler::handleControllerDeviceEvent(SDL_ControllerDeviceEvent* eve
             SDL_assert(m_GamepadMask == 0x1);
         }
 
+#if SDL_VERSION_ATLEAST(2, 0, 14)
+        // On SDL 2.0.14 and later, we can provide enhanced controller information to the host PC
+        // for it to use as a hint for the type of controller to emulate.
+        uint32_t supportedButtonFlags = 0;
+        for (int i = 0; i < SDL_arraysize(k_ButtonMap); i++) {
+            if (SDL_GameControllerHasButton(state->controller, (SDL_GameControllerButton)i)) {
+                supportedButtonFlags |= k_ButtonMap[i];
+            }
+        }
+
+        uint32_t capabilities = 0;
+        if (SDL_GameControllerGetBindForAxis(state->controller, SDL_CONTROLLER_AXIS_TRIGGERLEFT).bindType == SDL_CONTROLLER_BINDTYPE_AXIS ||
+            SDL_GameControllerGetBindForAxis(state->controller, SDL_CONTROLLER_AXIS_TRIGGERRIGHT).bindType == SDL_CONTROLLER_BINDTYPE_AXIS) {
+            // We assume these are analog triggers if the binding is to an axis rather than a button
+            capabilities |= LI_CCAP_ANALOG_TRIGGERS;
+        }
+        if (SDL_GameControllerHasRumble(state->controller)) {
+            capabilities |= LI_CCAP_RUMBLE;
+        }
+        if (SDL_GameControllerHasRumbleTriggers(state->controller)) {
+            capabilities |= LI_CCAP_TRIGGER_RUMBLE;
+        }
+        if (SDL_GameControllerGetNumTouchpads(state->controller) > 0) {
+            capabilities |= LI_CCAP_TOUCHPAD;
+        }
+        if (SDL_GameControllerHasSensor(state->controller, SDL_SENSOR_ACCEL)) {
+            capabilities |= LI_CCAP_ACCEL;
+        }
+        if (SDL_GameControllerHasSensor(state->controller, SDL_SENSOR_GYRO)) {
+            capabilities |= LI_CCAP_GYRO;
+        }
+
+        uint8_t type;
+        switch (SDL_GameControllerGetType(state->controller)) {
+        case SDL_CONTROLLER_TYPE_XBOX360:
+        case SDL_CONTROLLER_TYPE_XBOXONE:
+            type = LI_CTYPE_XBOX;
+            break;
+        case SDL_CONTROLLER_TYPE_PS3:
+        case SDL_CONTROLLER_TYPE_PS4:
+        case SDL_CONTROLLER_TYPE_PS5:
+            type = LI_CTYPE_PS;
+            break;
+        case SDL_CONTROLLER_TYPE_NINTENDO_SWITCH_PRO:
+        case SDL_CONTROLLER_TYPE_NINTENDO_SWITCH_JOYCON_LEFT:
+        case SDL_CONTROLLER_TYPE_NINTENDO_SWITCH_JOYCON_RIGHT:
+        case SDL_CONTROLLER_TYPE_NINTENDO_SWITCH_JOYCON_PAIR:
+            type = LI_CTYPE_NINTENDO;
+            break;
+        default:
+            type = LI_CTYPE_UNKNOWN;
+            break;
+        }
+
+        LiSendControllerArrivalEvent(state->index, m_GamepadMask, type, supportedButtonFlags, capabilities);
+#else
+
         // Send an empty event to tell the PC we've arrived
         sendGamepadState(state);
+#endif
     }
     else if (event->type == SDL_CONTROLLERDEVICEREMOVED) {
         state = findStateForGamepad(event->which);
@@ -552,6 +672,46 @@ void SdlInputHandler::rumble(unsigned short controllerNumber, unsigned short low
                              std::min(1.0, (GAMEPAD_HAPTIC_SIMPLE_HIFREQ_MOTOR_WEIGHT*highFreqMotor +
                                             GAMEPAD_HAPTIC_SIMPLE_LOWFREQ_MOTOR_WEIGHT*lowFreqMotor) / 65535.0),
                              SDL_HAPTIC_INFINITY);
+    }
+#endif
+}
+
+void SdlInputHandler::rumbleTriggers(uint16_t controllerNumber, uint16_t leftTrigger, uint16_t rightTrigger)
+{
+    // Make sure the controller number is within our supported count
+    if (controllerNumber >= MAX_GAMEPADS) {
+        return;
+    }
+
+#if SDL_VERSION_ATLEAST(2, 0, 14)
+    if (m_GamepadState[controllerNumber].controller != nullptr) {
+        SDL_GameControllerRumbleTriggers(m_GamepadState[controllerNumber].controller, leftTrigger, rightTrigger, 30000);
+    }
+#endif
+}
+
+void SdlInputHandler::setMotionEventState(uint16_t controllerNumber, uint8_t motionType, uint16_t reportRateHz)
+{
+    // Make sure the controller number is within our supported count
+    if (controllerNumber >= MAX_GAMEPADS) {
+        return;
+    }
+
+#if SDL_VERSION_ATLEAST(2, 0, 14)
+    if (m_GamepadState[controllerNumber].controller != nullptr) {
+        uint8_t reportPeriodMs = reportRateHz ? (1000 / reportRateHz) : 0;
+
+        switch (motionType) {
+        case LI_MOTION_TYPE_ACCEL:
+            m_GamepadState[controllerNumber].accelReportPeriodMs = reportPeriodMs;
+            SDL_GameControllerSetSensorEnabled(m_GamepadState[controllerNumber].controller, SDL_SENSOR_ACCEL, reportRateHz ? SDL_TRUE : SDL_FALSE);
+            break;
+
+        case LI_MOTION_TYPE_GYRO:
+            m_GamepadState[controllerNumber].gyroReportPeriodMs = reportPeriodMs;
+            SDL_GameControllerSetSensorEnabled(m_GamepadState[controllerNumber].controller, SDL_SENSOR_GYRO, reportRateHz ? SDL_TRUE : SDL_FALSE);
+            break;
+        }
     }
 #endif
 }
