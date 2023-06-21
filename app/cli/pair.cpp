@@ -79,14 +79,14 @@ public:
                 if (event.computer->pairState == NvComputer::PS_PAIRED) {
                     m_State = StateFailure;
                     QString msg = QObject::tr("%1 is already paired").arg(event.computer->name);
-                    emit q->failed(msg);
+                   // emit q->failed(msg);
                 }
                 else {
                     Q_ASSERT(!m_PredefinedPin.isEmpty());
 
                     m_State = StatePairing;
                     m_ComputerManager->pairHost(event.computer, m_PredefinedPin);
-                   // emit q->pairing(event.computer->name, m_PredefinedPin);
+                    emit q->pairing(event.computer->name, m_PredefinedPin);
                 }
             }
             break;
