@@ -19,8 +19,9 @@
 #define MOUSE_EMULATION_DEADZONE 2
 
 // Haptic capabilities (in addition to those from SDL_HapticQuery())
-#define ML_HAPTIC_GC_RUMBLE      (1U << 16)
-#define ML_HAPTIC_SIMPLE_RUMBLE  (1U << 17)
+#define ML_HAPTIC_GC_RUMBLE         (1U << 16)
+#define ML_HAPTIC_SIMPLE_RUMBLE     (1U << 17)
+#define ML_HAPTIC_GC_TRIGGER_RUMBLE (1U << 18)
 
 const int SdlInputHandler::k_ButtonMap[] = {
     A_FLAG, B_FLAG, X_FLAG, Y_FLAG,
@@ -62,6 +63,47 @@ void SdlInputHandler::sendGamepadState(GamepadState* state)
                                state->lsY,
                                state->rsX,
                                state->rsY);
+}
+
+void SdlInputHandler::sendGamepadBatteryState(GamepadState* state, SDL_JoystickPowerLevel level)
+{
+    uint8_t batteryPercentage;
+    uint8_t batteryState;
+
+    // SDL's battery reporting capabilities are quite limited. Notably, we cannot
+    // tell the battery level while charging (or even if a battery is present).
+    // We also cannot tell the percentage of charge exactly in any case.
+    switch (level)
+    {
+    case SDL_JOYSTICK_POWER_UNKNOWN:
+        batteryState = LI_BATTERY_STATE_UNKNOWN;
+        batteryPercentage = LI_BATTERY_PERCENTAGE_UNKNOWN;
+        break;
+    case SDL_JOYSTICK_POWER_WIRED:
+        batteryState = LI_BATTERY_STATE_CHARGING;
+        batteryPercentage = LI_BATTERY_PERCENTAGE_UNKNOWN;
+        break;
+    case SDL_JOYSTICK_POWER_EMPTY:
+        batteryState = LI_BATTERY_STATE_DISCHARGING;
+        batteryPercentage = 5;
+        break;
+    case SDL_JOYSTICK_POWER_LOW:
+        batteryState = LI_BATTERY_STATE_DISCHARGING;
+        batteryPercentage = 20;
+        break;
+    case SDL_JOYSTICK_POWER_MEDIUM:
+        batteryState = LI_BATTERY_STATE_DISCHARGING;
+        batteryPercentage = 50;
+        break;
+    case SDL_JOYSTICK_POWER_FULL:
+        batteryState = LI_BATTERY_STATE_DISCHARGING;
+        batteryPercentage = 90;
+        break;
+    default:
+        return;
+    }
+
+    LiSendControllerBatteryEvent(state->index, batteryState, batteryPercentage);
 }
 
 Uint32 SdlInputHandler::mouseEmulationTimerCallback(Uint32 interval, void *param)
@@ -323,15 +365,27 @@ void SdlInputHandler::handleControllerSensorEvent(SDL_ControllerSensorEvent* eve
 
     switch (event->sensor) {
     case SDL_SENSOR_ACCEL:
-        if (state->accelReportPeriodMs && SDL_TICKS_PASSED(event->timestamp, state->lastAccelEventTime + state->accelReportPeriodMs)) {
-            LiSendControllerMotionEvent((uint8_t)state->index, LI_MOTION_TYPE_ACCEL, event->data[0], event->data[1], event->data[2]);
+        if (state->accelReportPeriodMs &&
+                SDL_TICKS_PASSED(event->timestamp, state->lastAccelEventTime + state->accelReportPeriodMs) &&
+                memcmp(event->data, state->lastAccelEventData, sizeof(event->data)) != 0) {
+            memcpy(state->lastAccelEventData, event->data, sizeof(event->data));
             state->lastAccelEventTime = event->timestamp;
+
+            LiSendControllerMotionEvent((uint8_t)state->index, LI_MOTION_TYPE_ACCEL, event->data[0], event->data[1], event->data[2]);
         }
         break;
     case SDL_SENSOR_GYRO:
-        if (state->gyroReportPeriodMs && SDL_TICKS_PASSED(event->timestamp, state->lastGyroEventTime + state->gyroReportPeriodMs)) {
-            LiSendControllerMotionEvent((uint8_t)state->index, LI_MOTION_TYPE_GYRO, event->data[0], event->data[1], event->data[2]);
+        if (state->gyroReportPeriodMs &&
+                SDL_TICKS_PASSED(event->timestamp, state->lastGyroEventTime + state->gyroReportPeriodMs) &&
+                memcmp(event->data, state->lastGyroEventData, sizeof(event->data)) != 0) {
+            memcpy(state->lastGyroEventData, event->data, sizeof(event->data));
             state->lastGyroEventTime = event->timestamp;
+
+            // Convert rad/s to deg/s
+            LiSendControllerMotionEvent((uint8_t)state->index, LI_MOTION_TYPE_GYRO,
+                                        event->data[0] * 57.2957795f,
+                                        event->data[1] * 57.2957795f,
+                                        event->data[2] * 57.2957795f);
         }
         break;
     }
@@ -360,6 +414,20 @@ void SdlInputHandler::handleControllerTouchpadEvent(SDL_ControllerTouchpadEvent*
     }
 
     LiSendControllerTouchEvent((uint8_t)state->index, eventType, event->finger, event->x, event->y, event->pressure);
+}
+
+#endif
+
+#if SDL_VERSION_ATLEAST(2, 24, 0)
+
+void SdlInputHandler::handleJoystickBatteryEvent(SDL_JoyBatteryEvent* event)
+{
+    GamepadState* state = findStateForGamepad(event->which);
+    if (state == NULL) {
+        return;
+    }
+
+    sendGamepadBatteryState(state, event->level);
 }
 
 #endif
@@ -425,14 +493,18 @@ void SdlInputHandler::handleControllerDeviceEvent(SDL_ControllerDeviceEvent* eve
         state->controller = controller;
         state->jsId = SDL_JoystickInstanceID(SDL_GameControllerGetJoystick(state->controller));
 
+        hapticCaps = 0;
 #if SDL_VERSION_ATLEAST(2, 0, 18)
-        hapticCaps = SDL_GameControllerHasRumble(controller) ? ML_HAPTIC_GC_RUMBLE : 0;
+        hapticCaps |= SDL_GameControllerHasRumble(controller) ? ML_HAPTIC_GC_RUMBLE : 0;
+        hapticCaps |= SDL_GameControllerHasRumbleTriggers(controller) ? ML_HAPTIC_GC_TRIGGER_RUMBLE : 0;
 #elif SDL_VERSION_ATLEAST(2, 0, 9)
-        // Perform a tiny rumble to see if haptics are supported.
+        // Perform a tiny rumbles to see if haptics are supported.
         // NB: We cannot use zeros for rumble intensity or SDL will not actually call the JS driver
         // and we'll get a (potentially false) success value returned.
-        hapticCaps = SDL_GameControllerRumble(controller, 1, 1, 1) == 0 ?
-                        ML_HAPTIC_GC_RUMBLE : 0;
+        hapticCaps |= SDL_GameControllerRumble(controller, 1, 1, 1) == 0 ? ML_HAPTIC_GC_RUMBLE : 0;
+#if SDL_VERSION_ATLEAST(2, 0, 14)
+        hapticCaps |= SDL_GameControllerRumbleTriggers(controller, 1, 1, 1) == 0 ? ML_HAPTIC_GC_TRIGGER_RUMBLE : 0;
+#endif
 #else
         state->haptic = SDL_HapticOpenFromJoystick(SDL_GameControllerGetJoystick(state->controller));
         state->hapticEffectId = -1;
@@ -489,6 +561,8 @@ void SdlInputHandler::handleControllerDeviceEvent(SDL_ControllerDeviceEvent* eve
             SDL_assert(m_GamepadMask == 0x1);
         }
 
+        SDL_JoystickPowerLevel powerLevel = SDL_JoystickCurrentPowerLevel(SDL_GameControllerGetJoystick(state->controller));
+
 #if SDL_VERSION_ATLEAST(2, 0, 14)
         // On SDL 2.0.14 and later, we can provide enhanced controller information to the host PC
         // for it to use as a hint for the type of controller to emulate.
@@ -505,10 +579,10 @@ void SdlInputHandler::handleControllerDeviceEvent(SDL_ControllerDeviceEvent* eve
             // We assume these are analog triggers if the binding is to an axis rather than a button
             capabilities |= LI_CCAP_ANALOG_TRIGGERS;
         }
-        if (SDL_GameControllerHasRumble(state->controller)) {
+        if (hapticCaps & ML_HAPTIC_GC_RUMBLE) {
             capabilities |= LI_CCAP_RUMBLE;
         }
-        if (SDL_GameControllerHasRumbleTriggers(state->controller)) {
+        if (hapticCaps & ML_HAPTIC_GC_TRIGGER_RUMBLE) {
             capabilities |= LI_CCAP_TRIGGER_RUMBLE;
         }
         if (SDL_GameControllerGetNumTouchpads(state->controller) > 0) {
@@ -519,6 +593,12 @@ void SdlInputHandler::handleControllerDeviceEvent(SDL_ControllerDeviceEvent* eve
         }
         if (SDL_GameControllerHasSensor(state->controller, SDL_SENSOR_GYRO)) {
             capabilities |= LI_CCAP_GYRO;
+        }
+        if (powerLevel != SDL_JOYSTICK_POWER_UNKNOWN || SDL_VERSION_ATLEAST(2, 24, 0)) {
+            capabilities |= LI_CCAP_BATTERY_STATE;
+        }
+        if (SDL_GameControllerHasLED(state->controller)) {
+            capabilities |= LI_CCAP_RGB_LED;
         }
 
         uint8_t type;
@@ -533,9 +613,11 @@ void SdlInputHandler::handleControllerDeviceEvent(SDL_ControllerDeviceEvent* eve
             type = LI_CTYPE_PS;
             break;
         case SDL_CONTROLLER_TYPE_NINTENDO_SWITCH_PRO:
+#if SDL_VERSION_ATLEAST(2, 24, 0)
         case SDL_CONTROLLER_TYPE_NINTENDO_SWITCH_JOYCON_LEFT:
         case SDL_CONTROLLER_TYPE_NINTENDO_SWITCH_JOYCON_RIGHT:
         case SDL_CONTROLLER_TYPE_NINTENDO_SWITCH_JOYCON_PAIR:
+#endif
             type = LI_CTYPE_NINTENDO;
             break;
         default:
@@ -549,6 +631,11 @@ void SdlInputHandler::handleControllerDeviceEvent(SDL_ControllerDeviceEvent* eve
         // Send an empty event to tell the PC we've arrived
         sendGamepadState(state);
 #endif
+
+        // Send a power level if it's known at this time
+        if (powerLevel != SDL_JOYSTICK_POWER_UNKNOWN) {
+            sendGamepadBatteryState(state, powerLevel);
+        }
     }
     else if (event->type == SDL_CONTROLLERDEVICEREMOVED) {
         state = findStateForGamepad(event->which);
@@ -712,6 +799,20 @@ void SdlInputHandler::setMotionEventState(uint16_t controllerNumber, uint8_t mot
             SDL_GameControllerSetSensorEnabled(m_GamepadState[controllerNumber].controller, SDL_SENSOR_GYRO, reportRateHz ? SDL_TRUE : SDL_FALSE);
             break;
         }
+    }
+#endif
+}
+
+void SdlInputHandler::setControllerLED(uint16_t controllerNumber, uint8_t r, uint8_t g, uint8_t b)
+{
+    // Make sure the controller number is within our supported count
+    if (controllerNumber >= MAX_GAMEPADS) {
+        return;
+    }
+
+#if SDL_VERSION_ATLEAST(2, 0, 14)
+    if (m_GamepadState[controllerNumber].controller != nullptr) {
+        SDL_GameControllerSetLED(m_GamepadState[controllerNumber].controller, r, g, b);
     }
 #endif
 }

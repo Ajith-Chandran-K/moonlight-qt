@@ -40,8 +40,9 @@ private:
 
     bool createFrontendRenderer(PDECODER_PARAMETERS params, bool useAlternateFrontend);
 
-    bool tryInitializeRendererForDecoderByName(const char* decoderName,
-                                               PDECODER_PARAMETERS params);
+    bool tryInitializeRendererForUnknownDecoder(const AVCodec* decoder,
+                                                PDECODER_PARAMETERS params,
+                                                bool tryHwAccel);
 
     bool tryInitializeRenderer(const AVCodec* decoder,
                                PDECODER_PARAMETERS params,
@@ -91,4 +92,6 @@ private:
     static const uint8_t k_H264TestFrame[];
     static const uint8_t k_HEVCMainTestFrame[];
     static const uint8_t k_HEVCMain10TestFrame[];
+    static const uint8_t k_AV1Main8TestFrame[];
+    static const uint8_t k_AV1Main10TestFrame[];
 };

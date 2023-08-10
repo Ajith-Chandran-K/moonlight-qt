@@ -169,8 +169,8 @@ ComputerManager::ComputerManager(QObject *parent)
     m_DelayedFlushThread->start();
 
     // To quit in a timely manner, we must block additional requests
-    // after we receive the aboutToQuit() signal. This is neccessary
-    // because NvHTTP uses aboutToQuit() to abort requests in progres
+    // after we receive the aboutToQuit() signal. This is necessary
+    // because NvHTTP uses aboutToQuit() to abort requests in progress
     // while quitting, however this is a one time signal - additional
     // requests would not be aborted and block termination.
     connect(QCoreApplication::instance(), &QCoreApplication::aboutToQuit, this, &ComputerManager::handleAboutToQuit);
@@ -320,7 +320,7 @@ void ComputerManager::startPolling()
     if (prefs.enableMdns) {
         // Start an MDNS query for GameStream hosts
         m_MdnsServer.reset(new QMdnsEngine::Server());
-        m_MdnsBrowser = new QMdnsEngine::Browser(m_MdnsServer.get(), "_nvstream._tcp.local.");
+        m_MdnsBrowser = new QMdnsEngine::Browser(m_MdnsServer.data(), "_nvstream._tcp.local.");
         connect(m_MdnsBrowser, &QMdnsEngine::Browser::serviceAdded,
                 this, [this](const QMdnsEngine::Service& service) {
             qInfo() << "Discovered mDNS host:" << service.hostname();

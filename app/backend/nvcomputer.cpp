@@ -136,7 +136,8 @@ NvComputer::NvComputer(NvHTTP& http, QString serverInfo)
         this->serverCodecModeSupport = codecSupport.toInt();
     }
     else {
-        this->serverCodecModeSupport = 0;
+        // Assume H.264 is always supported
+        this->serverCodecModeSupport = SCM_H264;
     }
 
     QString maxLumaPixelsHEVC = NvHTTP::getXmlString(serverInfo, "MaxLumaPixelsHEVC");
@@ -273,15 +274,26 @@ bool NvComputer::wake() const
     // Try all unique address strings or host names
     bool success = false;
     for (auto i = addressMap.constBegin(); i != addressMap.constEnd(); i++) {
-        QHostInfo hostInfo = QHostInfo::fromName(i.key());
+        QHostAddress literalAddress;
+        QList<QHostAddress> addressList;
 
-        if (hostInfo.error() != QHostInfo::NoError) {
-            qWarning() << "Error resolving" << i.key() << ":" << hostInfo.errorString();
-            continue;
+        // If this is an IPv4/IPv6 literal, don't use QHostInfo::fromName() because that will
+        // try to perform a reverse DNS lookup that leads to delays sending WoL packets.
+        if (literalAddress.setAddress(i.key())) {
+            addressList.append(literalAddress);
+        }
+        else {
+            QHostInfo hostInfo = QHostInfo::fromName(i.key());
+            if (hostInfo.error() != QHostInfo::NoError) {
+                qWarning() << "Error resolving" << i.key() << ":" << hostInfo.errorString();
+                continue;
+            }
+
+            addressList.append(hostInfo.addresses());
         }
 
         // Try all IP addresses that this string resolves to
-        for (QHostAddress& address : hostInfo.addresses()) {
+        for (QHostAddress& address : addressList) {
             QUdpSocket sock;
 
             // Send to all static ports

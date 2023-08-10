@@ -141,6 +141,12 @@ D3D11VARenderer::~D3D11VARenderer()
         av_buffer_unref(&m_HwFramesContext);
     }
 
+    // Force destruction of the swapchain immediately
+    if (m_DeviceContext != nullptr) {
+        m_DeviceContext->ClearState();
+        m_DeviceContext->Flush();
+    }
+
     if (m_HwDeviceContext != nullptr) {
         // This will release m_Device and m_DeviceContext too
         av_buffer_unref(&m_HwDeviceContext);
@@ -360,6 +366,15 @@ bool D3D11VARenderer::initialize(PDECODER_PARAMETERS params)
                          "IDXGIFactory::CheckFeatureSupport(DXGI_FEATURE_PRESENT_ALLOW_TEARING) failed: %x",
                          hr);
             // Non-fatal
+        }
+
+        // DXVA2 may let us take over for FSE V-sync off cases. However, if we don't have DXGI_FEATURE_PRESENT_ALLOW_TEARING
+        // then we should not attempt to do this unless there's no other option (HDR, DXVA2 failed in pass 1, etc).
+        if (!m_AllowTearing && m_DecoderSelectionPass == 0 && !(params->videoFormat & VIDEO_FORMAT_MASK_10BIT) &&
+                (SDL_GetWindowFlags(params->window) & SDL_WINDOW_FULLSCREEN_DESKTOP) == SDL_WINDOW_FULLSCREEN) {
+            SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+                        "Defaulting to DXVA2 for FSE without DXGI_FEATURE_PRESENT_ALLOW_TEARING support");
+            return false;
         }
     }
 
@@ -983,6 +998,36 @@ bool D3D11VARenderer::checkDecoderSupport(IDXGIAdapter* adapter)
         else if (!supported) {
             SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
                          "GPU doesn't support HEVC Main10 decoding to P010 format");
+            videoDevice->Release();
+            return false;
+        }
+        break;
+
+    case VIDEO_FORMAT_AV1_MAIN8:
+        if (FAILED(videoDevice->CheckVideoDecoderFormat(&D3D11_DECODER_PROFILE_AV1_VLD_PROFILE0, DXGI_FORMAT_NV12, &supported))) {
+            SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
+                         "GPU doesn't support AV1 decoding");
+            videoDevice->Release();
+            return false;
+        }
+        else if (!supported) {
+            SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
+                         "GPU doesn't support AV1 decoding to NV12 format");
+            videoDevice->Release();
+            return false;
+        }
+        break;
+
+    case VIDEO_FORMAT_AV1_MAIN10:
+        if (FAILED(videoDevice->CheckVideoDecoderFormat(&D3D11_DECODER_PROFILE_AV1_VLD_PROFILE0, DXGI_FORMAT_P010, &supported))) {
+            SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
+                         "GPU doesn't support AV1 Main10 decoding");
+            videoDevice->Release();
+            return false;
+        }
+        else if (!supported) {
+            SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
+                         "GPU doesn't support AV1 Main10 decoding to P010 format");
             videoDevice->Release();
             return false;
         }

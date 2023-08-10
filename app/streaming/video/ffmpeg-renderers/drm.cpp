@@ -1,3 +1,8 @@
+// mmap64() for 32-bit off_t systems
+#ifndef _LARGEFILE64_SOURCE
+#define _LARGEFILE64_SOURCE 1
+#endif
+
 #include "drm.h"
 
 extern "C" {
@@ -24,6 +29,14 @@ extern "C" {
 // Regular P010 (not present in some old libdrm headers)
 #ifndef DRM_FORMAT_P010
 #define DRM_FORMAT_P010	fourcc_code('P', '0', '1', '0')
+#endif
+
+// Values for "Colorspace" connector property
+#ifndef DRM_MODE_COLORIMETRY_DEFAULT
+#define DRM_MODE_COLORIMETRY_DEFAULT     0
+#endif
+#ifndef DRM_MODE_COLORIMETRY_BT2020_RGB
+#define DRM_MODE_COLORIMETRY_BT2020_RGB  9
 #endif
 
 #include <unistd.h>
@@ -64,6 +77,7 @@ DrmRenderer::DrmRenderer(bool hwaccel, IFFmpegRenderer *backendRenderer)
       m_ColorEncodingProp(nullptr),
       m_ColorRangeProp(nullptr),
       m_HdrOutputMetadataProp(nullptr),
+      m_ColorspaceProp(nullptr),
       m_HdrOutputMetadataBlobId(0),
       m_SwFrameMapper(this),
       m_CurrentSwFrameIdx(0)
@@ -118,6 +132,10 @@ DrmRenderer::~DrmRenderer()
 
     if (m_HdrOutputMetadataProp != nullptr) {
         drmModeFreeProperty(m_HdrOutputMetadataProp);
+    }
+
+    if (m_ColorspaceProp != nullptr) {
+        drmModeFreeProperty(m_ColorspaceProp);
     }
 
     if (m_HwContext != nullptr) {
@@ -454,6 +472,9 @@ bool DrmRenderer::initialize(PDECODER_PARAMETERS params)
                 if (!strcmp(prop->name, "HDR_OUTPUT_METADATA")) {
                     m_HdrOutputMetadataProp = prop;
                 }
+                else if (!strcmp(prop->name, "Colorspace")) {
+                    m_ColorspaceProp = prop;
+                }
                 else if (!strcmp(prop->name, "max bpc") && m_Main10Hdr) {
                     if (drmModeObjectSetProperty(m_DrmFd, m_ConnectorId, DRM_MODE_OBJECT_CONNECTOR, prop->prop_id, 16) == 0) {
                         SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
@@ -548,6 +569,24 @@ int DrmRenderer::getRendererAttributes()
 
 void DrmRenderer::setHdrMode(bool enabled)
 {
+    if (m_ColorspaceProp != nullptr) {
+        int err = drmModeObjectSetProperty(m_DrmFd, m_ConnectorId, DRM_MODE_OBJECT_CONNECTOR,
+                                           m_ColorspaceProp->prop_id,
+                                           enabled ? DRM_MODE_COLORIMETRY_BT2020_RGB : DRM_MODE_COLORIMETRY_DEFAULT);
+        if (err == 0) {
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                        "Set HDMI Colorspace: %s",
+                        enabled ? "BT.2020 RGB" : "Default");
+        }
+        else {
+            SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
+                         "drmModeObjectSetProperty(%s) failed: %d",
+                         m_ColorspaceProp->name,
+                         errno);
+            // Non-fatal
+        }
+    }
+
     if (m_HdrOutputMetadataProp != nullptr) {
         if (m_HdrOutputMetadataBlobId != 0) {
             drmModeDestroyPropertyBlob(m_DrmFd, m_HdrOutputMetadataBlobId);
@@ -689,8 +728,12 @@ bool DrmRenderer::mapSoftwareFrame(AVFrame *frame, AVDRMFrameDescriptor *mappedF
             goto Exit;
         }
 
-        drmFrame->mapping = (uint8_t*)mmap(nullptr, drmFrame->size, PROT_WRITE, MAP_SHARED, m_DrmFd, mapBuf.offset);
-        if (drmFrame->mapping == nullptr) {
+        // Raspberry Pi on kernel 6.1 defaults to an aarch64 kernel with a 32-bit userspace (and off_t).
+        // This leads to issues when DRM_IOCTL_MODE_MAP_DUMB returns a > 4GB offset. The high bits are
+        // chopped off when passed via the normal mmap() call using 32-bit off_t. We avoid this issue
+        // by explicitly calling mmap64() to ensure the 64-bit offset is never truncated.
+        drmFrame->mapping = (uint8_t*)mmap64(nullptr, drmFrame->size, PROT_WRITE, MAP_SHARED, m_DrmFd, mapBuf.offset);
+        if (drmFrame->mapping == MAP_FAILED) {
             SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
                          "mmap() failed for dumb buffer: %d",
                          errno);
@@ -742,7 +785,7 @@ bool DrmRenderer::mapSoftwareFrame(AVFrame *frame, AVDRMFrameDescriptor *mappedF
                 else {
                     // UV/VU planes are 2x2 subsampled.
                     //
-                    // NB: The pitch is the same between Y and UV/VU, becasuse the 2x subsampling
+                    // NB: The pitch is the same between Y and UV/VU, because the 2x subsampling
                     // is cancelled out by the 2x plane size of UV/VU vs U/V alone.
                     planeHeight = frame->height / 2;
                 }

@@ -2,6 +2,7 @@
 
 #include <Limelight.h>
 #include <SDL.h>
+#include <SDL_syswm.h>
 #include "streaming/streamutils.h"
 
 #include <QtMath>
@@ -27,6 +28,40 @@ Uint32 SdlInputHandler::longPressTimerCallback(Uint32, void*)
     return 0;
 }
 
+void SdlInputHandler::disableTouchFeedback()
+{
+    SDL_SysWMinfo info;
+
+    SDL_VERSION(&info.version);
+    SDL_GetWindowWMInfo(m_Window, &info);
+
+#ifdef Q_OS_WIN32
+    if (info.subsystem == SDL_SYSWM_WINDOWS) {
+        auto fnSetWindowFeedbackSetting = (decltype(SetWindowFeedbackSetting)*)GetProcAddress(GetModuleHandleW(L"user32.dll"), "SetWindowFeedbackSetting");
+        if (fnSetWindowFeedbackSetting) {
+            constexpr FEEDBACK_TYPE feedbackTypes[] = {
+                FEEDBACK_TOUCH_CONTACTVISUALIZATION,
+                FEEDBACK_PEN_BARRELVISUALIZATION,
+                FEEDBACK_PEN_TAP,
+                FEEDBACK_PEN_DOUBLETAP,
+                FEEDBACK_PEN_PRESSANDHOLD,
+                FEEDBACK_PEN_RIGHTTAP,
+                FEEDBACK_TOUCH_TAP,
+                FEEDBACK_TOUCH_DOUBLETAP,
+                FEEDBACK_TOUCH_PRESSANDHOLD,
+                FEEDBACK_TOUCH_RIGHTTAP,
+                FEEDBACK_GESTURE_PRESSANDTAP,
+            };
+
+            for (FEEDBACK_TYPE ft : feedbackTypes) {
+                BOOL val = FALSE;
+                fnSetWindowFeedbackSetting(info.info.win.window, ft, 0, sizeof(val), &val);
+            }
+        }
+    }
+#endif
+}
+
 void SdlInputHandler::handleAbsoluteFingerEvent(SDL_TouchFingerEvent* event)
 {
     SDL_Rect src, dst;
@@ -43,6 +78,7 @@ void SdlInputHandler::handleAbsoluteFingerEvent(SDL_TouchFingerEvent* event)
     dst.h = windowHeight;
 
     // Scale window-relative events to be video-relative and clamp to video region
+    StreamUtils::scaleSourceToDestinationSurface(&src, &dst);
     float vidrelx = qMin(qMax((int)(event->x * windowWidth), dst.x), dst.x + dst.w) - dst.x;
     float vidrely = qMin(qMax((int)(event->y * windowHeight), dst.y), dst.y + dst.h) - dst.y;
 
@@ -77,8 +113,14 @@ void SdlInputHandler::handleAbsoluteFingerEvent(SDL_TouchFingerEvent* event)
     }
 
     // Try to send it as a native touch event, otherwise fall back to our touch emulation
-    if (LiSendTouchEvent(eventType, pointerId, vidrelx / dst.w, vidrely / dst.h, event->pressure) == LI_ERR_UNSUPPORTED) {
+    if (LiSendTouchEvent(eventType, pointerId, vidrelx / dst.w, vidrely / dst.h, event->pressure,
+                         0.0f, 0.0f, LI_ROT_UNKNOWN) == LI_ERR_UNSUPPORTED) {
         emulateAbsoluteFingerEvent(event);
+    }
+    else if (!m_DisabledTouchFeedback) {
+        // Disable touch feedback when passing touch natively
+        disableTouchFeedback();
+        m_DisabledTouchFeedback = true;
     }
 }
 

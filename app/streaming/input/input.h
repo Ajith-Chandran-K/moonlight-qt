@@ -20,9 +20,11 @@ struct GamepadState {
     uint32_t lastStartDownTime;
 
     uint8_t gyroReportPeriodMs;
+    float lastGyroEventData[SDL_arraysize(SDL_ControllerSensorEvent::data)];
     uint32_t lastGyroEventTime;
 
     uint8_t accelReportPeriodMs;
+    float lastAccelEventData[SDL_arraysize(SDL_ControllerSensorEvent::data)];
     uint32_t lastAccelEventTime;
 
     int buttons;
@@ -72,6 +74,10 @@ public:
     void handleControllerTouchpadEvent(SDL_ControllerTouchpadEvent* event);
 #endif
 
+#if SDL_VERSION_ATLEAST(2, 24, 0)
+    void handleJoystickBatteryEvent(SDL_JoyBatteryEvent* event);
+#endif
+
     void handleJoystickArrivalEvent(SDL_JoyDeviceEvent* event);
 
     void sendText(QString& string);
@@ -81,6 +87,8 @@ public:
     void rumbleTriggers(uint16_t controllerNumber, uint16_t leftTrigger, uint16_t rightTrigger);
 
     void setMotionEventState(uint16_t controllerNumber, uint8_t motionType, uint16_t reportRateHz);
+
+    void setControllerLED(uint16_t controllerNumber, uint8_t r, uint8_t g, uint8_t b);
 
     void handleTouchFingerEvent(SDL_TouchFingerEvent* event);
 
@@ -126,9 +134,13 @@ private:
 
     void sendGamepadState(GamepadState* state);
 
+    void sendGamepadBatteryState(GamepadState* state, SDL_JoystickPowerLevel level);
+
     void handleAbsoluteFingerEvent(SDL_TouchFingerEvent* event);
 
     void emulateAbsoluteFingerEvent(SDL_TouchFingerEvent* event);
+
+    void disableTouchFeedback();
 
     void handleRelativeFingerEvent(SDL_TouchFingerEvent* event);
 
@@ -184,6 +196,7 @@ private:
     int m_StreamHeight;
     bool m_AbsoluteMouseMode;
     bool m_AbsoluteTouchMode;
+    bool m_DisabledTouchFeedback;
 
     SDL_TouchFingerEvent m_TouchDownEvent[MAX_FINGERS];
     SDL_TimerID m_LeftButtonReleaseTimer;
